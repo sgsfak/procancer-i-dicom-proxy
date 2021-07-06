@@ -1,10 +1,15 @@
 const dimse = require('dicom-dimse-native');
 const config = require("config");
 const throat = require('throat')(config.get('maxAssociations'));
-const _ = require("lodash")
+const _ = require("lodash");
+const LRU = require("lru-cache");
 
-// const target = config["target-dicomserver"];
-const target = config["target"];
+// Cache series info in here:
+const maxHoursTTL = 5;
+const cache = new LRU( {max: 500 , maxAge: 1000 * 60 * 60 * maxHoursTTL });
+
+const target = config["target-dicomserver"];
+// const target = config["target"];
 
 
 const dictionary = {
@@ -19,11 +24,10 @@ const dictionary = {
         "00080060": "Modality",
         "0008103E": "SeriesDescription",
         "00200011": "SeriesNumber",
-        "00201209": "NumberOfSeriesRelatedInstances",
-        "00201002": "ImagesInAcquisition",
-        "00201003": "ImagesInSeries"
+        "00201209": "NumberOfSeriesRelatedInstances"
     },
     "instance": {
+        "0020000D": "StudyInstanceUID",
         "0020000E": "SeriesInstanceUID",
         "00080018": "SOPInstanceUID"
     }
@@ -43,6 +47,11 @@ function dicomJson2Json(dict, dicom_json)
 }
 
 function getSeriesMetadata (seriesUid) {
+    const cachedSeriesData = cache.get(seriesUid);
+    if (cachedSeriesData) {
+        return cachedSeriesData;
+    }
+
     let search = _.fromPairs(_.keys(dictionary.series).map(x => [x, ""]));
     search["0020000E"] = seriesUid;
     search["00080052"] = "SERIES";
@@ -61,6 +70,7 @@ function getSeriesMetadata (seriesUid) {
                 }
                 const dicom_json = JSON.parse(response.container)
                 let res = dicomJson2Json(dictionary.series, dicom_json);
+                cache.set(seriesUid, res);
                 resolve(res);
             }
             catch (e) {
@@ -71,20 +81,12 @@ function getSeriesMetadata (seriesUid) {
 }
 
 function imagesOfSeries (seriesUid) {
+    let search = _.fromPairs(_.keys(dictionary.instance).map(x => [x, ""]));
+    search["0020000E"] = seriesUid;
+    search["00080052"] = "IMAGE";
     let q = {
         source: config.source, target,
-        tags: [
-            {key: "0020000D", value: ""}, // StudyInstanceUID 
-            {key: '00080018', value: ""}, // SOPInstanceUID
-            {
-                key: "0020000E",  // SeriesInstanceUID
-                value: seriesUid,
-            },
-            {
-                key: "00080052", 
-                value: "IMAGE",
-            },
-        ]
+        tags: _.toPairs(search).map( v => _.zipObject(["key", "value"], v))
     }
     return new Promise((resolve, reject) => {
         dimse.findScu(JSON.stringify(q), (result) => {
@@ -222,4 +224,8 @@ async function downloadSeries(studyUid, seriesUid) {
     });
 }
 
-module.exports = {getSeriesMetadata, imagesOfSeries, segmentationsOfSeries, downloadSeries};
+async function getSeriesMetadataList (seriesUids) {
+    return Promise.all(seriesUids.map(u => throat(async () => await getSeriesMetadata(u))));
+}
+
+module.exports = {getSeriesMetadata, getSeriesMetadataList, imagesOfSeries, segmentationsOfSeries, downloadSeries};

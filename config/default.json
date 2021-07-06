@@ -4,7 +4,7 @@
             "ip" : "127.0.0.1",
                 "port": "9999"
     },
-    "target": {
+    "target-dicomserver": {
         "aet": "dicomserver",
         "ip" : "www.dicomserver.co.uk",
         "port": "11112"

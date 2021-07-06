@@ -1,0 +1,21 @@
+{
+  "name": "pacs-proxy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "config": "^3.3.6",
+    "dicom-dimse-native": "^1.3.0",
+    "fastify": "^3.18.1",
+    "fastify-cors": "^6.0.1",
+    "fastify-helmet": "^5.3.1",
+    "fastify-static": "^4.2.2",
+    "throat": "^6.0.1"
+  }
+}

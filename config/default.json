@@ -1,0 +1,16 @@
+{
+    "source": {
+        "aet": "STELIOSVIEWER",
+            "ip" : "127.0.0.1",
+                "port": "9999"
+    },
+    "target": {
+        "aet": "dicomserver",
+        "ip" : "www.dicomserver.co.uk",
+        "port": "11112"
+    },
+    "transferSyntax": "1.2.840.10008.1.2.4.80",
+    "maxAssociations": 5,
+    "storagePath": "./data"
+
+}

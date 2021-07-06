@@ -1,44 +1,67 @@
 const dimse = require('dicom-dimse-native');
 const config = require("config");
-const util = require('util');
+const throat = require('throat')(config.get('maxAssociations'));
+const _ = require("lodash")
 
 // const target = config["target-dicomserver"];
 const target = config["target"];
-function findSeries (seriesUid) {
+
+
+const dictionary = {
+    "study": {
+        "00100010": "PatientName",
+        "00100020": "PatientID",
+        "0020000D": "StudyInstanceUID"
+    },
+    "series": {
+        "0020000D": "StudyInstanceUID",
+        "0020000E": "SeriesInstanceUID",
+        "00080060": "Modality",
+        "0008103E": "SeriesDescription",
+        "00200011": "SeriesNumber",
+        "00201209": "NumberOfSeriesRelatedInstances",
+        "00201002": "ImagesInAcquisition",
+        "00201003": "ImagesInSeries"
+    },
+    "instance": {
+        "0020000E": "SeriesInstanceUID",
+        "00080018": "SOPInstanceUID"
+    }
+}
+
+function dicomJson2Json(dict, dicom_json)
+{
+    let ret = {}
+    dicom_json.forEach(o => {
+        _.toPairs(o).forEach( ([t,v]) => {
+            let name = _.get(dict, t, t);
+            let value = _.get(v, ["Value", "0"], "");   
+            ret[name] = value;
+        })
+    });
+    return ret;
+}
+
+function getSeriesMetadata (seriesUid) {
+    let search = _.fromPairs(_.keys(dictionary.series).map(x => [x, ""]));
+    search["0020000E"] = seriesUid;
+    search["00080052"] = "SERIES";
+
     let q = {
         source: config.source, target,
-        tags: [
-            {key: "00100010", value: ""}, // Patient Name
-            {key: "00100020", value: ""}, // PatientID
-            {key: "0020000D", value: ""}, // StudyInstanceUID 
-            {key: '00080060', value: ""}, // Modality
-            {key: '0008103E', value: ""}, // SeriesDescription
-            {key: '00200011', value: ""}, // SeriesNumber
-            {key: '00201209', value: ""},
-            {key: '00080018', value: ""}, // SOPInstanceUID 
-            {key: "00201002", value: ""},
-            {key: "00201003", value: ""}, // ImagesInSeries
-            
-            {
-                key: "0020000E",  // SeriesInstanceUID
-                value: seriesUid,
-            },
-            {
-                key: "00080052", 
-                value: "SERIES",
-            },
-        ]
+        tags: _.toPairs(search).map( v => _.zipObject(["key", "value"], v))
     }
     return new Promise((resolve, reject) => {
         dimse.findScu(JSON.stringify(q), (result) => {
             try {
                 const response = JSON.parse(result);
+                if (!response.container) {
+                    reject('not found');
+                    return;
+                }
                 const dicom_json = JSON.parse(response.container)
-                // console.log("Found %s images", dicom_json.length);
-                // const image_uids = dicom_json.map(element => element["00080018"].Value[0]);
-                // image_uids.forEach(element => console.log(element));
-                console.log(response.container);
-                resolve(response.container);
+                let res = dicomJson2Json(dictionary.series, dicom_json);
+                resolve(res);
             }
             catch (e) {
                 reject(e);
@@ -72,11 +95,11 @@ function imagesOfSeries (seriesUid) {
                     resolve([]);
                 }
                 const dicom_json = JSON.parse(response.container)
+                // console.log("RESP: %O", dicom_json);
                 const image_uids = dicom_json.map(element => {
-                    const studyUid = element["0020000D"].Value[0];
                     const seriesUid = element["0020000E"].Value[0];
                     const instanceUid = element["00080018"].Value[0];
-                    return {studyUid, seriesUid, instanceUid, url: `/instances/${studyUid}/${seriesUid}/${instanceUid}`};
+                    return {seriesUid, instanceUid};
                 });
                 resolve(image_uids);
             }
@@ -120,7 +143,7 @@ function segmentationsOfSeries (seriesUid) {
                 const image_uids = dicom_json.map(element => {
                     const seriesUid = element["0020000E"].Value[0];
                     const instanceUid = element["00080018"].Value[0];
-                    return {seriesUid, instanceUid, url: `/instances/${seriesUid}/${instanceUid}`};
+                    return {seriesUid, instanceUid};
                 });
                 // console.log(response.container);
                 resolve(image_uids);
@@ -133,7 +156,9 @@ function segmentationsOfSeries (seriesUid) {
 }
 
 
-function getImage (studyUid, seriesUid, imageUid) {
+const locks = new Map();
+
+function fetchSeries(studyUid, seriesUid, lockId) {
 
     const ts = config.get('transferSyntax');
     const j = {
@@ -144,14 +169,15 @@ function getImage (studyUid, seriesUid, imageUid) {
         writeTransfer : ts,
         verbose: false,
         tags: [
-            { key: '00080052', value: 'IMAGE'  },
+            { key: '00080052', value: 'SERIES'  },
             // { key: '0020000D', value: studyUid },
             { key: '0020000E', value: seriesUid},
-            { key: '00080018', value: imageUid }
+            // { key: '00080018', value: imageUid }
         ]
       };
 
-    const uidPath = `${studyUid}/${seriesUid}/${imageUid}`;
+    // const uidPath = `${studyUid}/${seriesUid}/${imageUid}`;
+    const uidPath = `${studyUid}/${seriesUid}`;
     // const cacheTime = config.get('keepCacheInMinutes');
 
     const prom = new Promise((resolve, reject) => {
@@ -163,15 +189,15 @@ function getImage (studyUid, seriesUid, imageUid) {
                     try {
                         const json = JSON.parse(result);
                         if (json.code === 0 || json.code === 2) {
-                            console.info(`fetch finished: ${uidPath}`);
-                            resolve(result);
+                            console.info(`fetch finished, status: ${json.status} path: ${uidPath}`);
+                            resolve(json);
                         } else {
-                            console.info(JSON.parse(result));
+                            console.info(result);
                         }
                     } catch (error) {
                         reject(error, result);
                     }
-                    // lock.delete(lockId);
+                    locks.delete(lockId);
                 }
             });
         } catch (error) {
@@ -179,8 +205,21 @@ function getImage (studyUid, seriesUid, imageUid) {
         }
     });
     // store in lock
-    // lock.set(lockId, prom);
+    locks.set(lockId, prom);
     return prom;
 };
 
-module.exports = {findSeries, imagesOfSeries, segmentationsOfSeries, getImage};
+async function downloadSeries(studyUid, seriesUid) {
+    const lockId = `${studyUid}/${seriesUid}`;
+
+    // check if already locked and return promise
+    if (locks.has(lockId)) {
+        return locks.get(lockId);
+    }
+
+    return throat(async () => {
+        await fetchSeries(studyUid, seriesUid, lockId);
+    });
+}
+
+module.exports = {getSeriesMetadata, imagesOfSeries, segmentationsOfSeries, downloadSeries};

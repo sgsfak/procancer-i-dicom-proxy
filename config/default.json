@@ -11,6 +11,6 @@
     },
     "transferSyntax": "1.2.840.10008.1.2.4.80",
     "maxAssociations": 5,
-    "storagePath": "./data"
-
+    "storagePath": "./data",
+    "serverUri": "http://127.0.0.1:3000"
 }

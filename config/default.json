@@ -4,13 +4,13 @@
             "ip" : "127.0.0.1",
                 "port": "9999"
     },
-    "target-dicomserver": {
+    "target": {
         "aet": "dicomserver",
         "ip" : "www.dicomserver.co.uk",
         "port": "11112"
     },
     "transferSyntax": "1.2.840.10008.1.2.4.80",
-    "maxAssociations": 5,
+    "maxAssociations": 10,
     "storagePath": "./data",
     "serverUri": "http://127.0.0.1:3000"
 }

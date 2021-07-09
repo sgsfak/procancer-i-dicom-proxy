@@ -1,15 +1,23 @@
 const config = require("config");
 const fastify = require('fastify')({ logger: true })
 const helmet = require('fastify-helmet');
+const fileUpload = require('fastify-file-upload')
 const fs = require("fs/promises");
+const os = require("os");
 const path = require('path')
-const _ = require("lodash")
+const {_} = require("lodash")
+ 
+fastify.register(fileUpload, {
+    useTempFiles : true,
+    tempFileDir : '/tmp/'
+});
 
 fastify.register(require('fastify-static'), {
   root: path.join(__dirname, config.storagePath)
 });
 
-const {getSeriesMetadata, getSeriesMetadataList, imagesOfSeries, segmentationsOfSeries, downloadSeries} = require("./dicom");
+const {parseDicomFile, getSeriesMetadata, getSeriesMetadataList, imagesOfSeries, 
+       segmentationsOfSeries, downloadSeries, dicomUploadDir} = require("./dicom");
 fastify.register(
     helmet,
     // Example disables the `contentSecurityPolicy` middleware but keeps the rest.
@@ -105,6 +113,55 @@ fastify.get('/files/:studyUid/:seriesUid/:instanceUid', async (request, reply) =
         return reply.type("application/dicom").sendFile(pathname);
     }
 })
+
+// Upload registration:
+
+async function mvToUploadDir(dir, fileInfo)
+{
+    return new Promise((resolve, reject) => {
+        const {mv, name} = fileInfo;
+        console.log(`Moving ${name} to ${dir}`);
+        mv(dir + name, function (err) {
+            if (err) {
+                reject(err);
+            }
+            else {
+                resolve();
+            }
+        });
+    });
+}
+fastify.post('/series/:seriesUid', async (request, reply) => {
+    const {seriesUid} = request.params;
+
+    const uploads = _.values(request.raw.files || {});
+    if (uploads.length === 0) {
+        return reply.status(400).send({error: 'No files were given.'});
+    }
+    let ret = [];
+    for (let index = 0; index < uploads.length; index++) {
+        const {tempFilePath} = uploads[index];
+
+        const info = await parseDicomFile(tempFilePath);
+        console.log("%O", info);
+        if (info.Modality !== "SEG" || !info.referencedSeries) {
+            return reply.status(400).send({error: 'File not in DICOM-SEG format!'});
+        }
+        if (!info.referencedSeries.includes(seriesUid)) {
+            return reply.status(400).send({error: `File does not reference Series ${seriesUid}`});
+        }
+        // return reply.send(info);
+        // ret.push(info);
+    }
+
+    const dir = await fs.mkdtemp(await fs.realpath(os.tmpdir())) + path.sep;
+    console.log("Created " + dir);
+    for (let index = 0; index < uploads.length; index++) {
+        await mvToUploadDir(dir, uploads[index]);
+    }
+    ret = await dicomUploadDir(dir);
+    reply.send(ret);
+});
 
 // Run the server!
 const start = async () => {

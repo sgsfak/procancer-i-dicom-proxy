@@ -1,15 +1,17 @@
 const dimse = require('dicom-dimse-native');
 const config = require("config");
 const throat = require('throat')(config.get('maxAssociations'));
-const _ = require("lodash");
+const {_} = require("lodash");
 const LRU = require("lru-cache");
+const fs = require('fs/promises');
+const dicomParser = require('dicom-parser');
 
 // Cache series info in here:
 const maxHoursTTL = 5;
 const cache = new LRU( {max: 500 , maxAge: 1000 * 60 * 60 * maxHoursTTL });
 
-const target = config["target-dicomserver"];
-// const target = config["target"];
+// const target = config["target-dicomserver"];
+const target = config["target"];
 
 
 const dictionary = {
@@ -29,6 +31,7 @@ const dictionary = {
     "instance": {
         "0020000D": "StudyInstanceUID",
         "0020000E": "SeriesInstanceUID",
+        "00080060": "Modality",
         "00080018": "SOPInstanceUID"
     }
 }
@@ -51,11 +54,11 @@ function getSeriesMetadata (seriesUid) {
     if (cachedSeriesData) {
         return cachedSeriesData;
     }
-
+    
     let search = _.fromPairs(_.keys(dictionary.series).map(x => [x, ""]));
     search["0020000E"] = seriesUid;
     search["00080052"] = "SERIES";
-
+    
     let q = {
         source: config.source, target,
         tags: _.toPairs(search).map( v => _.zipObject(["key", "value"], v))
@@ -161,7 +164,7 @@ function segmentationsOfSeries (seriesUid) {
 const locks = new Map();
 
 function fetchSeries(studyUid, seriesUid, lockId) {
-
+    
     const ts = config.get('transferSyntax');
     const j = {
         source: config.source, target,
@@ -176,12 +179,12 @@ function fetchSeries(studyUid, seriesUid, lockId) {
             { key: '0020000E', value: seriesUid},
             // { key: '00080018', value: imageUid }
         ]
-      };
-
+    };
+    
     // const uidPath = `${studyUid}/${seriesUid}/${imageUid}`;
     const uidPath = `${studyUid}/${seriesUid}`;
     // const cacheTime = config.get('keepCacheInMinutes');
-
+    
     const prom = new Promise((resolve, reject) => {
         try {
             console.info(`fetch start: ${uidPath}`);
@@ -213,12 +216,12 @@ function fetchSeries(studyUid, seriesUid, lockId) {
 
 async function downloadSeries(studyUid, seriesUid) {
     const lockId = `${studyUid}/${seriesUid}`;
-
+    
     // check if already locked and return promise
     if (locks.has(lockId)) {
         return locks.get(lockId);
     }
-
+    
     return throat(async () => {
         await fetchSeries(studyUid, seriesUid, lockId);
     });
@@ -228,4 +231,44 @@ async function getSeriesMetadataList (seriesUids) {
     return Promise.all(seriesUids.map(u => throat(async () => await getSeriesMetadata(u))));
 }
 
-module.exports = {getSeriesMetadata, getSeriesMetadataList, imagesOfSeries, segmentationsOfSeries, downloadSeries};
+async function parseDicomFile(filename)
+{
+    let obj = {};
+    try {
+        const buf = await fs.readFile(filename);
+        const dataset = dicomParser.parseDicom(buf)
+        const dict = dictionary.instance;
+        obj = _.fromPairs(_.keys(dict).map(x => [dict[x], dataset.string(`x${x}`.toLowerCase())]));
+        const referenced = dataset.elements.x00081115?.items || [];
+        obj.referencedSeries = referenced.map( tt => tt.dataSet.string('x0020000e'))
+    }
+    catch  (e) {
+        console.log("Error: %s", e);
+    }
+    return obj;
+}
+
+async function dicomUploadDir(dir)
+{
+    
+    return new Promise((resolve, reject) => {
+        const ts = config.transferSyntax;
+        dimse.storeScu(JSON.stringify({
+            source: config.source, target,
+            sourcePath: dir, // Directory with DICOM files to be send
+
+            netTransferPropose : ts
+        }),
+        (result) => {
+            try {
+                console.log(result);
+                resolve(JSON.parse(result));
+            }
+            catch (e) {
+                reject(e, result);
+            }
+        });
+    });
+}
+
+module.exports = {dicomUploadDir, parseDicomFile, getSeriesMetadata, getSeriesMetadataList, imagesOfSeries, segmentationsOfSeries, downloadSeries};
